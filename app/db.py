@@ -11,11 +11,11 @@ DATABASE_URL = 'sqlite+aiosqlite:///./test.db'
 class Base(DeclarativeBase):
     pass
 
-class Posts(Base):
+class Post(Base):
     __tablename__ = 'posts'
 
     # ---COLUMNS---
-    
+
     id = Column(UUID(as_uuid=True) , primary_key=True , default=uuid.uuid4)
 
     caption = Column(Text)
