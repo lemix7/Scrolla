@@ -1,12 +1,18 @@
 from contextlib import asynccontextmanager
+import uuid
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
+from app.users import current_active_user, fastapi_users
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db import Post, create_db_and_table, get_async_session
+from app.auth import auth_user
+from app.db import Post, User, create_db_and_table, get_async_session
 from app.images import imagekit
 import tempfile
 import os
 import shutil
+
+from app.schemas import UserCreate, UserRead, UserUpdate
 
 
 @asynccontextmanager
@@ -18,8 +24,19 @@ async def lifespan(app: FastAPI):
 fast_app = FastAPI(lifespan=lifespan)
 
 
+fast_app.include_router(fastapi_users.get_auth_router(auth_user), prefix='/auth/jwt', tags=['auth'])
+    
+fast_app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix='/auth', tags=['auth'])
+
+fast_app.include_router(fastapi_users.get_reset_password_router(), prefix='/auth', tags=['auth'])
+
+fast_app.include_router(fastapi_users.get_verify_router(UserRead), prefix='/auth', tags=['auth'])
+
+fast_app.include_router(fastapi_users.get_users_router(UserRead, UserUpdate), prefix='/users', tags=['users'])
+
+
 @fast_app.post('/upload')
-async def upload_file(file: UploadFile = File(...), caption: str = Form(''), session: AsyncSession = Depends(get_async_session)):
+async def upload_file(file: UploadFile = File(...), caption: str = Form(''), session: AsyncSession = Depends(get_async_session) ,  user: User = Depends(current_active_user)):
 
     temp_file_path = None
 
@@ -39,6 +56,7 @@ async def upload_file(file: UploadFile = File(...), caption: str = Form(''), ses
 
                 # CREATE POST OBJECT
                 post = Post(
+                    user_id=user.id,
                     caption=caption,
                     url=upload_response.url,
                     file_type='video' if file.content_type.startswith(
@@ -80,3 +98,29 @@ async def get_feed(session: AsyncSession = Depends(get_async_session)):
         })
 
         return {'posts': posts_data}
+
+
+@fast_app.delete('/posts/{post_id}')
+async def delete_post(post_id: str, session: AsyncSession = Depends(get_async_session)):
+
+    try:
+        post_uuid = uuid.UUID(post_id)
+
+        result = await session.execute(select(Post).where(Post.id == post_uuid))
+
+        post = result.scalars().first()
+
+        if not post:
+            raise HTTPException(
+                status_code=HTTP_404_NOT_FOUND, detail='post not found')
+
+        await session.delete(post)
+        await session.commit()
+
+        return {'Success': True, 'message': 'Post deleted successfully'}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
