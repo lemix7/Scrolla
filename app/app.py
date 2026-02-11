@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 import uuid
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
 from app.users import current_active_user, fastapi_users
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,19 +24,24 @@ async def lifespan(app: FastAPI):
 fast_app = FastAPI(lifespan=lifespan)
 
 
-fast_app.include_router(fastapi_users.get_auth_router(auth_user), prefix='/auth/jwt', tags=['auth'])
-    
-fast_app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix='/auth', tags=['auth'])
+fast_app.include_router(fastapi_users.get_auth_router(
+    auth_user), prefix='/auth/jwt', tags=['auth'])
 
-fast_app.include_router(fastapi_users.get_reset_password_router(), prefix='/auth', tags=['auth'])
+fast_app.include_router(fastapi_users.get_register_router(
+    UserRead, UserCreate), prefix='/auth', tags=['auth'])
 
-fast_app.include_router(fastapi_users.get_verify_router(UserRead), prefix='/auth', tags=['auth'])
+fast_app.include_router(
+    fastapi_users.get_reset_password_router(), prefix='/auth', tags=['auth'])
 
-fast_app.include_router(fastapi_users.get_users_router(UserRead, UserUpdate), prefix='/users', tags=['users'])
+fast_app.include_router(fastapi_users.get_verify_router(
+    UserRead), prefix='/auth', tags=['auth'])
+
+fast_app.include_router(fastapi_users.get_users_router(
+    UserRead, UserUpdate), prefix='/users', tags=['users'])
 
 
 @fast_app.post('/upload')
-async def upload_file(file: UploadFile = File(...), caption: str = Form(''), session: AsyncSession = Depends(get_async_session) ,  user: User = Depends(current_active_user)):
+async def upload_file(file: UploadFile = File(...), caption: str = Form(''), session: AsyncSession = Depends(get_async_session),  user: User = Depends(current_active_user)):
 
     temp_file_path = None
 
@@ -78,30 +83,37 @@ async def upload_file(file: UploadFile = File(...), caption: str = Form(''), ses
 
 
 @fast_app.get('/feed')
-async def get_feed(session: AsyncSession = Depends(get_async_session)):
+async def get_feed(session: AsyncSession = Depends(get_async_session), user:  User = Depends(current_active_user)):
 
     result = await session.execute(select(Post).order_by(Post.created_at.desc()))
 
     # extract the posts from results
     posts = [row[0] for row in result.all()]
 
+    result = await session.execute(select(User))
+    users = [row[0] for row in result.all()]
+    user_dict = {u.id: u.email for u in users}
+
     posts_data = []
 
     for post in posts:
         posts_data.append({
             'id': post.id,
+            'user_id': str(post.user_id),
             'caption': post.caption,
             'url': post.url,
             'file_type': post.file_type,
             'file_name': post.file_name,
-            'created_at': post.created_at
+            'created_at': post.created_at,
+            'is_owner': post.user_id == user.id,
+            'email': user_dict.get(post.user_id , 'Unknow user')
         })
 
         return {'posts': posts_data}
 
 
 @fast_app.delete('/posts/{post_id}')
-async def delete_post(post_id: str, session: AsyncSession = Depends(get_async_session)):
+async def delete_post(post_id: str, session: AsyncSession = Depends(get_async_session), user:  User = Depends(current_active_user)):
 
     try:
         post_uuid = uuid.UUID(post_id)
@@ -114,6 +126,10 @@ async def delete_post(post_id: str, session: AsyncSession = Depends(get_async_se
             raise HTTPException(
                 status_code=HTTP_404_NOT_FOUND, detail='post not found')
 
+        if post.user_id != user.id:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED, detail='You are not authorized to delete this post')
+
         await session.delete(post)
         await session.commit()
 
@@ -122,5 +138,3 @@ async def delete_post(post_id: str, session: AsyncSession = Depends(get_async_se
     except Exception as e:
         raise HTTPException(
             status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
